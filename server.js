@@ -962,30 +962,114 @@ io.on("connection", (socket) => {
         const enrichedContacts = [];
         const total = filteredContactsList.length;
 
-       let excludedSavedCount = 0;
+        let excludedSavedCount = 0;
         if (enrichData || excludeSaved) {
+          const needsDetailsFetch = !!(enrichData && (fetchProfilePics || fetchAboutStatus));
           const delay = delayMs !== undefined ? parseInt(delayMs) : 100;
+          
+          // Use larger batch size and 0 delay if we only need browser-memory cached contact names/pushnames
+          const batchSize = needsDetailsFetch ? 15 : 100;
+          const effectiveDelay = needsDetailsFetch ? delay : 0;
+
           logProgress(
-            `⏳ Starting batch data enrichment for ${total} contacts with a ${delay}ms delay...`, sessionId
+            `⏳ Starting batch data enrichment for ${total} contacts (mode: ${needsDetailsFetch ? "network fetch" : "cache fetch"}, batch size: ${batchSize}, delay: ${effectiveDelay}ms)...`, sessionId
           );
 
-          // Fetch details in batches of 10
-          const batchSize = 10;
           for (let i = 0; i < total; i += batchSize) {
             const batch = filteredContactsList.slice(i, i + batchSize);
+            
+            // Run batch browser evaluate to fetch multiple contact details at once
+            let batchResultsMap = {};
+            try {
+              batchResultsMap = await s.client.pupPage.evaluate(async (ids, fetchPics, fetchAbout) => {
+                try {
+                  const ContactCollection = window.require('WAWebCollections').Contact;
+                  const WidFactory = window.require('WAWebWidFactory');
+                  const PicAction = window.require('WAWebProfilePicContactAction');
+                  const StatusAction = window.require('WAWebStatusAction');
+                  
+                  const res = {};
+                  for (const id of ids) {
+                    try {
+                      const contact = ContactCollection ? ContactCollection.get(id) : null;
+                      const chatWid = WidFactory ? WidFactory.createWid(id) : null;
+                      
+                      let profilePicUrl = "";
+                      let aboutStatus = "";
+                      
+                      if (fetchPics && PicAction && chatWid) {
+                        try {
+                          const pic = await PicAction.profilePicFind(chatWid);
+                          profilePicUrl = pic ? pic.imgPath : "";
+                        } catch (e) {}
+                      }
+                      
+                      if (fetchAbout && StatusAction && chatWid) {
+                        try {
+                          const status = await StatusAction.getStatus(chatWid);
+                          aboutStatus = status ? status.status : "";
+                        } catch (e) {}
+                      }
+                      
+                      res[id] = {
+                        name: contact ? (contact.name || contact.displayName || "") : "",
+                        pushname: contact ? (contact.pushname || "") : "",
+                        isBusiness: contact ? !!(contact.isBusiness || contact.isEnterprise) : false,
+                        isMyContact: contact ? !!contact.isMyContact : false,
+                        profilePicUrl,
+                        aboutStatus,
+                        actualNumber: (contact && contact.id && contact.id.server === 'c.us') ? contact.id.user : (id.split('@')[0] || '')
+                      };
+                    } catch (singleErr) {
+                      // Skip error on individual contact in batch
+                    }
+                  }
+                  return res;
+                } catch (evalErr) {
+                  return { error: evalErr.message };
+                }
+              }, batch.map(c => c.id), fetchProfilePics, fetchAboutStatus);
+
+              if (batchResultsMap && batchResultsMap.error) {
+                logProgress(`⚠️ Batch evaluate warning: ${batchResultsMap.error}`, sessionId);
+                batchResultsMap = {};
+              }
+            } catch (err) {
+              logProgress(`⚠️ Batch evaluate error: ${err.message}`, sessionId);
+              batchResultsMap = {};
+            }
+
             const batchPromises = batch.map(async (c) => {
               try {
+                const batchedData = batchResultsMap && batchResultsMap[c.id];
+                if (batchedData) {
+                  if (excludeSaved && batchedData.isMyContact) {
+                    return null;
+                  }
+                  const actualNumber = batchedData.actualNumber || c.userId;
+                  const offlineCC = getCountryCodeOffline(actualNumber);
+                  return {
+                    number: actualNumber,
+                    name: enrichData ? batchedData.name : "",
+                    pushname: enrichData ? batchedData.pushname : "",
+                    country: offlineCC.country,
+                    countryCode: offlineCC.prefix,
+                    isBusiness: enrichData ? batchedData.isBusiness : false,
+                    isAdmin: c.isAdmin,
+                    isMyContact: batchedData.isMyContact,
+                    sourceGroup: Array.from(c.groupNames).join("; "),
+                    profilePicUrl: batchedData.profilePicUrl || "",
+                    aboutStatus: batchedData.aboutStatus || "",
+                  };
+                }
+
+                // Fallback: Individual Puppeteer API calls if batch evaluator failed to resolve this contact
                 const contact = await s.client.getContactById(c.id);
-                
-                // Exclude contacts in the address book if toggle is checked
                 if (excludeSaved && contact.isMyContact) {
                   return null;
                 }
-
-                // Resolve LID to phone number if available
                 const actualNumber = (contact.id && contact.id.server === 'c.us') ? contact.id.user : c.userId;
                 const offlineCC = getCountryCodeOffline(actualNumber);
-                
                 let profilePicUrl = "";
                 let aboutStatus = "";
                 if (enrichData && fetchProfilePics) {
@@ -994,7 +1078,6 @@ io.on("connection", (socket) => {
                 if (enrichData && fetchAboutStatus) {
                   try { aboutStatus = await contact.getAbout(); } catch(e){}
                 }
-
                 return {
                   number: actualNumber,
                   name: enrichData ? (contact.name || "") : "",
@@ -1040,8 +1123,8 @@ io.on("connection", (socket) => {
             const percent = Math.round((processed / total) * 100);
             io.to(sessionId).emit("extraction-progress", { processed, total, percent });
 
-            if (delay > 0 && i + batchSize < total) {
-              await new Promise((resolve) => setTimeout(resolve, delay));
+            if (effectiveDelay > 0 && i + batchSize < total) {
+              await new Promise((resolve) => setTimeout(resolve, effectiveDelay));
             }
           }
           logProgress("✅ Enrichment complete.", sessionId);
