@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# WhatsApp session auth
+.wwebjs_auth/
+
+# Backups and logs
+*.bak
+crash.log
+
+# Temp files
+temp_downloads/
