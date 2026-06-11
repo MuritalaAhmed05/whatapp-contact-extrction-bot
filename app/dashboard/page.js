@@ -248,6 +248,7 @@ export default function Dashboard() {
     newSocket.on("extraction-complete", ({ results, combined, wasLimited, originalContactCount, tier }) => {
       if (!results || results.length === 0) {
         setLogs((prev) => [...prev, "❌ Extraction completed but no files were returned."]);
+        addToast("Extraction failed: no contacts were returned.", "error");
         return;
       }
       setProgress(null);
@@ -257,15 +258,17 @@ export default function Dashboard() {
       setExtractionLimitInfo(wasLimited ? { originalContactCount, tier } : null);
 
       const date = new Date().toLocaleString();
+      const totalCount = results.reduce((a, b) => a + b.count, 0);
       if (combined) {
         // Only save the combined file to prevent duplicate spam in history
-        saveToHistory({ ...combined, date, count: results.reduce((a, b) => a + b.count, 0) });
+        saveToHistory({ ...combined, date, count: totalCount });
       } else {
         // Only 1 group selected, save it individually
         results.forEach(res => {
           saveToHistory({ ...res, date });
         });
       }
+      addToast(`Extraction completed successfully! Saved ${totalCount} contacts.`, "success");
     });
 
     newSocket.on("extraction-error", (msg) => {
@@ -279,8 +282,10 @@ export default function Dashboard() {
       const partLabel = (chunkIndex !== undefined && chunkIndex !== null) ? `${groupName} Part ${chunkIndex + 1}` : groupName;
       if (success) {
         setLogs(prev => [...prev, `✅ Successfully sent "${partLabel}" to your WhatsApp DM!`]);
+        addToast(`Successfully sent "${partLabel}" to your WhatsApp DM!`, "success");
       } else {
         setLogs(prev => [...prev, `❌ Failed to send to DM: ${message}`]);
+        addToast(`Failed to send to DM: ${message}`, "error");
       }
     });
 
@@ -363,6 +368,7 @@ export default function Dashboard() {
   const triggerDownload = async (fileId, format, label, chunkIndex = null, chunkSize = null) => {
     if (!fileId || fileId === "undefined") {
       setLogs(p => [...p, "❌ Download error: File ID is missing."]);
+      addToast("Download failed: File ID is missing.", "error");
       return;
     }
     let url = `/download/${fileId}?format=${format}`;
@@ -374,6 +380,7 @@ export default function Dashboard() {
       if (!res.ok) {
         const msg = await res.text();
         setLogs(p => [...p, `❌ Download failed: ${msg}`]);
+        addToast(`Download failed: ${msg}`, "error");
         return;
       }
       const blob = await res.blob();
@@ -392,8 +399,10 @@ export default function Dashboard() {
 
       const displayLabel = (chunkIndex !== null) ? `${label} Part ${chunkIndex + 1}` : label;
       setLogs(p => [...p, `💾 Downloaded “${displayLabel}” as .${format.toUpperCase()}`]);
+      addToast(`Downloaded "${displayLabel}" successfully!`, "success");
     } catch (err) {
       setLogs(p => [...p, `❌ Download error: ${err.message}`]);
+      addToast(`Download error: ${err.message}`, "error");
     }
   };
 
@@ -402,6 +411,7 @@ export default function Dashboard() {
     setIsSendingDm(true);
     const displayLabel = (chunkIndex !== null) ? `${groupName} Part ${chunkIndex + 1}` : groupName;
     setLogs(p => [...p, `💬 Preparing to send "${displayLabel}" contacts as .${activeFormat.toUpperCase()} to your WhatsApp DM...`]);
+    addToast(`Preparing DM transfer for "${displayLabel}"...`, "info");
     socket.emit("send-to-dm", { fileId, groupName, format: activeFormat, chunkIndex, chunkSize });
   };
 
@@ -409,6 +419,7 @@ export default function Dashboard() {
     if (isDownloadingAll) return;
     setIsDownloadingAll(true);
     setLogs(p => [...p, `📥 Starting batch download for "${label}" (${totalCount} contacts in parts)...`]);
+    addToast(`Starting batch download for "${label}"...`, "info");
     const totalParts = Math.ceil(totalCount / splitSize);
     
     for (let i = 0; i < totalParts; i++) {
@@ -418,12 +429,14 @@ export default function Dashboard() {
     
     setIsDownloadingAll(false);
     setLogs(p => [...p, `✅ Batch download complete for "${label}".`]);
+    addToast(`Batch download complete for "${label}"!`, "success");
   };
 
   const sendAllChunksSequentially = async (fileId, groupName, totalCount) => {
     if (isSendingAll) return;
     setIsSendingAll(true);
     setLogs(p => [...p, `📤 Starting batch DM transfer for "${groupName}" in parts...`]);
+    addToast(`Starting batch DM transfer for "${groupName}"...`, "info");
     const totalParts = Math.ceil(totalCount / splitSize);
     
     for (let i = 0; i < totalParts; i++) {
@@ -441,6 +454,7 @@ export default function Dashboard() {
     
     setIsSendingAll(false);
     setLogs(p => [...p, `✅ Batch DM transfer complete for "${groupName}".`]);
+    addToast(`Batch DM transfer complete for "${groupName}"!`, "success");
   };
 
   const toggleGroupSelection = (id, name) => {
@@ -1370,6 +1384,7 @@ export default function Dashboard() {
           <div key={toast.id} className={`toast toast-${toast.type}`}>
             {toast.type === 'error' && <span style={{ marginRight: '8px' }}>❌</span>}
             {toast.type === 'success' && <span style={{ marginRight: '8px' }}>✅</span>}
+            {toast.type === 'info' && <span style={{ marginRight: '8px' }}>ℹ️</span>}
             {toast.message}
           </div>
         ))}

@@ -1755,6 +1755,10 @@ input[type="range"] {
   border-left-color: #25D366;
 }
 
+.toast-info {
+  border-left-color: #3b82f6;
+}
+
 @keyframes slideInRight {
   from { transform: translateX(100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
